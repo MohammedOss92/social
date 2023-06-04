@@ -1,13 +1,15 @@
 from django.shortcuts import render, redirect
 from django.db.models import Q
+from django.utils import timezone
 from django.urls import reverse_lazy
 from django.shortcuts import redirect
+from django.contrib import messages
 from django.contrib.auth.models import User
 from django.http import HttpResponseRedirect, HttpResponse
 from django.contrib.auth.mixins import UserPassesTestMixin, LoginRequiredMixin
 from django.views import View
-from .models import Post, Comment, UserProfile, Notification, ThreadModel, MessageModel
-from .forms import PostForm, CommentForm, ThreadForm, MessageForm
+from .models import *
+from .forms import *
 from django.views.generic.edit import UpdateView, DeleteView
 
 
@@ -16,11 +18,13 @@ class PostListView(LoginRequiredMixin, View):
         logged_in_user = request.user
         posts = Post.objects.filter(
             author__profile__followers__in=[logged_in_user.id]
-        ).order_by('-created_on')
+        )
         form = PostForm()
+        share_form = ShareForm()
 
         context = {
             'post_list': posts,
+            'shareform': share_form,
             'form': form,
         }
 
@@ -30,16 +34,28 @@ class PostListView(LoginRequiredMixin, View):
         logged_in_user = request.user
         posts = Post.objects.filter(
             author__profile__followers__in=[logged_in_user.id]
-        ).order_by('-created_on')
+        )
         form = PostForm(request.POST, request.FILES)
+        files = request.FILES.getlist('image')
+        share_form = ShareForm()
 
         if form.is_valid():
             new_post = form.save(commit=False)
             new_post.author = request.user
             new_post.save()
 
+            new_post.create_tags()
+
+            for f in files:
+                img = Image(image=f)
+                img.save()
+                new_post.image.add(img)
+
+            new_post.save()
+
         context = {
             'post_list': posts,
+            'shareform': share_form,
             'form': form,
         }
 
@@ -50,7 +66,7 @@ class PostDetailView(LoginRequiredMixin, View):
         post = Post.objects.get(pk=pk)
         form = CommentForm()
 
-        comments = Comment.objects.filter(post=post).order_by('-created_on')
+        comments = Comment.objects.filter(post=post)
 
         context = {
             'post': post,
@@ -69,7 +85,9 @@ class PostDetailView(LoginRequiredMixin, View):
             new_comment.post = post
             new_comment.save()
 
-        comments = Comment.objects.filter(post=post).order_by('-created_on')
+            new_comment.create_tags()
+
+        comments = Comment.objects.filter(post=post)
 
         notification = Notification.objects.create(notification_type=2, from_user=request.user, to_user=post.author, post=post)
 
@@ -136,7 +154,7 @@ class ProfileView(View):
     def get(self, request, pk, *args, **kwargs):
         profile = UserProfile.objects.get(pk=pk)
         user = profile.user
-        posts = Post.objects.filter(author=user).order_by('-created_on')
+        posts = Post.objects.filter(author=user)
 
         followers = profile.followers.all()
 
@@ -313,6 +331,29 @@ class AddCommentDislike(LoginRequiredMixin, View):
         next = request.POST.get('next', '/')
         return HttpResponseRedirect(next)
 
+class SharedPostView(View):
+    def post(self, request, pk, *args, **kwargs):
+       original_post = Post.objects.get(pk=pk)
+       form = ShareForm(request.POST)
+
+       if form.is_valid():
+            new_post = Post(
+                shared_body=self.request.POST.get('body'),
+                body=original_post.body,
+                author=original_post.author,
+                created_on=original_post.created_on,
+                shared_user=request.user,
+                shared_on=timezone.now(),
+            )
+            new_post.save()
+
+            for img in original_post.image.all():
+                new_post.image.add(img)
+
+            new_post.save()
+
+       return redirect('post-list')
+
 class UserSearch(View):
     def get(self, request, *args, **kwargs):
         query = self.request.GET.get('query')
@@ -357,6 +398,16 @@ class FollowNotification(View):
         notification.save()
 
         return redirect('profile', pk=profile_pk)
+
+class ThreadNotification(View):
+    def get(self, request, notification_pk, object_pk, *args, **kwargs):
+        notification = Notification.objects.get(pk=notification_pk)
+        thread = ThreadModel.objects.get(pk=object_pk)
+
+        notification.user_has_seen = True
+        notification.save()
+
+        return redirect('thread', pk=object_pk)
 
 class RemoveNotification(View):
     def delete(self, request, notification_pk, *args, **kwargs):
@@ -410,6 +461,7 @@ class CreateThread(View):
 
                 return redirect('thread', pk=thread.pk)
         except:
+            messages.error(request, 'Invalid username')
             return redirect('create-thread')
 
 class ThreadView(View):
@@ -427,21 +479,61 @@ class ThreadView(View):
 
 class CreateMessage(View):
     def post(self, request, pk, *args, **kwargs):
+        form = MessageForm(request.POST, request.FILES)
         thread = ThreadModel.objects.get(pk=pk)
         if thread.receiver == request.user:
             receiver = thread.user
         else:
             receiver = thread.receiver
 
-        message = MessageModel(
-            thread=thread,
-            sender_user=request.user,
-            receiver_user=receiver,
-            body=request.POST.get('message')
+        if form.is_valid():
+            message = form.save(commit=False)
+            message.thread = thread
+            message.sender_user = request.user
+            message.receiver_user = receiver
+            message.save()
+
+        notification = Notification.objects.create(
+            notification_type=4,
+            from_user=request.user,
+            to_user=receiver,
+            thread=thread
         )
-
-        message.save()
         return redirect('thread', pk=pk)
+    
+class Explore(View):
+    def get(self, request, *args, **kwargs):
+        explore_form = ExploreForm()
+        query = self.request.GET.get('query')
+        tag = Tag.objects.filter(name=query).first()
+        
+        if tag:
+            posts = Post.objects.filter(tags__in=[tag])
+        else:
+            posts = Post.objects.all()
+            
+        context = {
+            'tag': tag,
+            'posts': posts,
+            'explore_form': explore_form,
+        }
+        return render(request, 'social/explore.html', context)
 
 
-
+    def post(self, request, *args, **kwargs):
+        explore_form = ExploreForm(request.POST)
+        if explore_form.is_valid():
+            query = explore_form.cleaned_data['query']
+            tag = Tag.objects.filter(name=query).first()
+            posts = None
+            if tag:
+                posts = Post.objects.filter(tags__in=[tag])
+            
+            if posts:
+                context = {'tag': tag, 'posts': posts}
+            else:
+                context = {'tag': tag}
+            
+            return HttpResponseRedirect(f'/social/explore/?query={query}')
+        
+        return HttpResponseRedirect('/social/explore')
