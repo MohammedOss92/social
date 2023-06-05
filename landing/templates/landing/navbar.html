@@ -20,10 +20,21 @@
       <form class="d-flex" method="GET" action="{% url 'profile-search' %}">
         <div class="input-group">
           <span class="input-group-text" id="basic-addon1">@</span>
-          <input type="text" class="form-control" placeholder="Username" aria-label="Username" aria-describedby="basic-addon1" name="query" value="{{ request.GET.query }}">
+          <input type="text" class="form-control" placeholder="Username" aria-label="Username" aria-describedby="basic-addon1" name="query" value="{{ request.GET.query }}" required>
+
+          {% comment %} {% if not request.GET.query %}
+            <button class="remove-default-btn" type="button" disabled><i class="fas fa-search"></i></button>
+        {% else %}
+        <button class="remove-default-btn" type="submit"><i class="fas fa-search"></i></button>
+    {% endif %} {% endcomment %}
+          
           <button class="remove-default-btn" type="submit"><i class="fas fa-search"></i></button>
         </div>
       </form>
+
+      
+
+
       {% if user.is_authenticated %}
       <div class="nav-item dropdown">
         <a class="nav-link dropdown-toggle text-dark" data-bs-toggle="dropdown" role="buton" aria-expanded="false"><i class="fas fa-user"></i></a>
